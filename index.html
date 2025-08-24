@@ -1,1 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rota App</title>
+<link href="https://cdn.jsdelivr.net/npm/tailwindcss@3.3.3/dist/tailwind.min.css" rel="stylesheet">
+<link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/index.global.min.css' rel='stylesheet' />
+<style>
+  body { font-family: sans-serif; }
+  .fc-event { font-size: 0.75rem; }
+</style>
+</head>
+<body class="bg-gray-100">
 
+<div id="app" class="min-h-screen flex flex-col items-center justify-start p-4"></div>
+
+<script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/index.global.min.js'></script>
+<script>
+
+// --- LocalStorage Data ---
+if(!localStorage.getItem('users')){
+    localStorage.setItem('users', JSON.stringify([
+        {username:'Admin', password:'DraytonTav2025', isAdmin:true},
+        {username:'User1', password:'password1', isAdmin:false},
+        {username:'User2', password:'password2', isAdmin:false}
+    ]));
+}
+if(!localStorage.getItem('shifts')) localStorage.setItem('shifts', JSON.stringify([]));
+if(!localStorage.getItem('dayOffs')) localStorage.setItem('dayOffs', JSON.stringify([]));
+
+// --- App State ---
+let currentUser = null;
+
+// --- Utilities ---
+function getUsers(){ return JSON.parse(localStorage.getItem('users')); }
+function getShifts(){ return JSON.parse(localStorage.getItem('shifts')); }
+function setShifts(shifts){ localStorage.setItem('shifts', JSON.stringify(shifts)); }
+function getDayOffs(){ return JSON.parse(localStorage.getItem('dayOffs')); }
+function setDayOffs(dayOffs){ localStorage.setItem('dayOffs', JSON.stringify(dayOffs)); }
+
+function generateRota(){
+    const users = getUsers().filter(u=>!u.isAdmin);
+    const now = new Date();
+    const year = now.getFullYear(), month = now.getMonth();
+    const daysInMonth = new Date(year, month+1,0).getDate();
+    const shifts = [];
+    for(let d=1; d<=daysInMonth; d++){
+        const dateObj = new Date(year, month, d);
+        const day = dateObj.getDay(); // 0=Sun
+        let start='', end='', stdHours=0;
+        if(day===1){ start='13:30'; end='22:00'; stdHours=8.5; }        // Mon Line cleaning
+        else if(day>=2 && day<=5){ start='13:30'; end='22:00'; stdHours=8.5; }
+        else if(day===6){ start='12:00'; end='22:00'; stdHours=10; }    // Sat
+        else if(day===0){ start='12:00'; end='17:00'; stdHours=5; }     // Sun
+        let assigned = day===5 || day===6 ? users.slice(0,2) : users.slice(0,1);
+        assigned.forEach(u=>{
+            shifts.push({username:u.username, date: dateObj.toISOString().split('T')[0], start, end, stdHours, signIn:null, signOut:null});
+        });
+    }
+    setShifts(shifts);
+}
+
+// --- Render Login ---
+function renderLogin(){
+    const app = document.getElementById('app');
+    app.innerHTML = `
+        <div class="w-full max-w-sm bg-white p-6 rounded shadow-md">
+            <h2 class="text-xl font-bold mb-4">Login</h2>
+            <input id="username" class="w-full mb-2 p-2 border rounded" placeholder="Username" />
+            <input id="password" type="password" class="w-full mb-2 p-2 border rounded" placeholder="Password" />
+            <button id="loginBtn" class="w-full bg-blue-500 text-white p-2 rounded">Login</button>
+        </div>
+    `;
+    document.getElementById('loginBtn').onclick = ()=>{
+        const u = document.getElementById('username').value;
+        const p = document.getElementById('password').value;
+        const user = getUsers().find(x=>x.username===u && x.password===p);
+        if(user){ currentUser=user; renderApp(); } 
+        else alert('Invalid login');
+    }
+}
+
+// --- Render Main App ---
+function renderApp(){
+    const app = document.getElementById('app');
+    app.innerHTML = `
+        <div class="flex flex-col w-full">
+            <div class="flex flex-col md:flex-row justify-between items-center p-2 bg-gray-200 mb-2">
+                <div class="flex mb-2 md:mb-0">
+                    <button id="signInBtn" class="bg-green-500 text-white p-1 rounded mr-2">Sign In</button>
+                    <button id="signOutBtn" class="bg-red-500 text-white p-1 rounded">Sign Out</button>
+                </div>
+                <div>Logged in as ${currentUser.username} ${currentUser.isAdmin?'(Admin)':''}</div>
+            </div>
+            <div class="flex flex-col md:flex-row">
+                <div class="flex-1 p-2">
+                    <div id="calendar"></div>
+                </div>
+                <div class="w-full md:w-80 p-2 bg-gray-50">
+                    <div class="mb-4">
+                        <h3 class="font-bold mb-2">Request Day Off</h3>
+                        <input type="date" id="dayOffDate" class="border p-1 mb-1 w-full" />
+                        <input type="text" id="dayOffReason" placeholder="Reason" class="border p-1 mb-1 w-full" />
+                        <button id="dayOffBtn" class="bg-green-500 text-white p-1 rounded w-full">Submit</button>
+                    </div>
+                    ${currentUser.isAdmin?`
+                    <div>
+                        <h3 class="font-bold mb-2">Admin Panel</h3>
+                        <button id="genRotaBtn" class="bg-blue-500 text-white p-1 rounded mb-2 w-full">Generate Rota</button>
+                        <div id="requests"></div>
+                        <div id="hours"></div>
+                    </div>`:``}
+                </div>
+            </div>
+        </div>
+    `;
+
+    // --- Buttons ---
+    document.getElementById('signInBtn').onclick = ()=>signInOut('signIn');
+    document.getElementById('signOutBtn').onclick = ()=>signInOut('signOut');
+    document.getElementById('dayOffBtn').onclick = submitDayOff;
+    if(currentUser.isAdmin) document.getElementById('genRotaBtn').onclick = ()=>{
+        generateRota(); renderApp();
+    };
+
+    renderCalendar();
+    if(currentUser.isAdmin) renderAdminPanel();
+}
+
+// --- Calendar ---
+function renderCalendar(){
+    const calendarEl = document.getElementById('calendar');
+    const calendar = new FullCalendar.Calendar(calendarEl, {
+        initialView: 'dayGridMonth',
+        height:'auto',
+        events: getShifts().map(s=>{
+            let title = `${s.username} ${s.signIn?'SI':' '} ${s.signOut?'SO':' '}`;
+            return {title, start:s.date};
+        }).concat(getDayOffs().map(d=>({title:`Day Off (${d.username})`, start:d.date, backgroundColor:d.approved?'green':'orange'})))
+    });
+    calendar.render();
+}
+
+// --- Sign In/Out ---
+function signInOut(type){
+    const today = new Date().toISOString().split('T')[0];
+    const shifts = getShifts();
+    const shift = shifts.find(s=>s.date===today && s.username===currentUser.username);
+    if(shift){
+        if(type==='signIn') shift.signIn = new Date().toISOString();
+        if(type==='signOut') shift.signOut = new Date().toISOString();
+        setShifts(shifts);
+        renderCalendar();
+    } else alert('No shift today');
+}
+
+// --- Day Off ---
+function submitDayOff(){
+    const date = document.getElementById('dayOffDate').value;
+    const reason = document.getElementById('dayOffReason').value;
+    if(!date) return alert('Select a date');
+    const offs = getDayOffs();
+    offs.push({username:currentUser.username, date, reason, approved: currentUser.isAdmin});
+    setDayOffs(offs);
+    renderCalendar();
+    if(currentUser.isAdmin) renderAdminPanel();
+}
+
+// --- Admin Panel ---
+function renderAdminPanel(){
+    const requestsEl = document.getElementById('requests');
+    const hoursEl = document.getElementById('hours');
+    const offs = getDayOffs().filter(d=>!d.approved);
+    requestsEl.innerHTML = '<h4 class="font-bold">Pending Day Offs</h4>';
+    offs.forEach((d,i)=>{
+        const div = document.createElement('div');
+        div.className = 'flex justify-between items-center border p-1 mb-1';
+        div.innerHTML = `${d.date} - ${d.username} - ${d.reason} 
+        <button class="bg-green-500 text-white p-1 rounded ml-1">Approve</button>`;
+        div.querySelector('button').onclick = ()=>{
+            d.approved=true;
+            setDayOffs(getDayOffs());
+            renderApp();
+        };
+        requestsEl.appendChild(div);
+    });
+
+    // Hours summary
+    const users = getUsers().filter(u=>!u.isAdmin);
+    hoursEl.innerHTML='<h4 class="font-bold">User Hours</h4>';
+    const shifts = getShifts();
+    users.forEach(u=>{
+        const userShifts = shifts.filter(s=>s.username===u.username);
+        const total = userShifts.length*8; // approx hours
+        hoursEl.innerHTML += `<div>${u.username}: ${total}h</div>`;
+    });
+}
+
+// --- Start ---
+renderLogin();
+
+</script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rota App</title>
+<link href="https://cdn.jsdelivr.net/npm/tailwindcss@3.3.3/dist/tailwind.min.css" rel="stylesheet">
+<link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/index.global.min.css' rel='stylesheet' />
+<style>
+  body { font-family: sans-serif; }
+  .fc-event { font-size: 0.75rem; }
+</style>
+</head>
+<body class="bg-gray-100">
+
+<div id="app" class="min-h-screen flex flex-col items-center justify-start p-4"></div>
+
+<script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/index.global.min.js'></script>
+<script>
+
+// --- LocalStorage Data ---
+if(!localStorage.getItem('users')){
+    localStorage.setItem('users', JSON.stringify([
+        {username:'Admin', password:'DraytonTav2025', isAdmin:true},
+        {username:'User1', password:'password1', isAdmin:false},
+        {username:'User2', password:'password2', isAdmin:false}
+    ]));
+}
+if(!localStorage.getItem('shifts')) localStorage.setItem('shifts', JSON.stringify([]));
+if(!localStorage.getItem('dayOffs')) localStorage.setItem('dayOffs', JSON.stringify([]));
+
+// --- App State ---
+let currentUser = null;
+
+// --- Utilities ---
+function getUsers(){ return JSON.parse(localStorage.getItem('users')); }
+function getShifts(){ return JSON.parse(localStorage.getItem('shifts')); }
+function setShifts(shifts){ localStorage.setItem('shifts', JSON.stringify(shifts)); }
+function getDayOffs(){ return JSON.parse(localStorage.getItem('dayOffs')); }
+function setDayOffs(dayOffs){ localStorage.setItem('dayOffs', JSON.stringify(dayOffs)); }
+
+function generateRota(){
+    const users = getUsers().filter(u=>!u.isAdmin);
+    const now = new Date();
+    const year = now.getFullYear(), month = now.getMonth();
+    const daysInMonth = new Date(year, month+1,0).getDate();
+    const shifts = [];
+    for(let d=1; d<=daysInMonth; d++){
+        const dateObj = new Date(year, month, d);
+        const day = dateObj.getDay(); // 0=Sun
+        let start='', end='', stdHours=0;
+        if(day===1){ start='13:30'; end='22:00'; stdHours=8.5; }        // Mon Line cleaning
+        else if(day>=2 && day<=5){ start='13:30'; end='22:00'; stdHours=8.5; }
+        else if(day===6){ start='12:00'; end='22:00'; stdHours=10; }    // Sat
+        else if(day===0){ start='12:00'; end='17:00'; stdHours=5; }     // Sun
+        let assigned = day===5 || day===6 ? users.slice(0,2) : users.slice(0,1);
+        assigned.forEach(u=>{
+            shifts.push({username:u.username, date: dateObj.toISOString().split('T')[0], start, end, stdHours, signIn:null, signOut:null});
+        });
+    }
+    setShifts(shifts);
+}
+
+// --- Render Login ---
+function renderLogin(){
+    const app = document.getElementById('app');
+    app.innerHTML = `
+        <div class="w-full max-w-sm bg-white p-6 rounded shadow-md">
+            <h2 class="text-xl font-bold mb-4">Login</h2>
+            <input id="username" class="w-full mb-2 p-2 border rounded" placeholder="Username" />
+            <input id="password" type="password" class="w-full mb-2 p-2 border rounded" placeholder="Password" />
+            <button id="loginBtn" class="w-full bg-blue-500 text-white p-2 rounded">Login</button>
+        </div>
+    `;
+    document.getElementById('loginBtn').onclick = ()=>{
+        const u = document.getElementById('username').value;
+        const p = document.getElementById('password').value;
+        const user = getUsers().find(x=>x.username===u && x.password===p);
+        if(user){ currentUser=user; renderApp(); } 
+        else alert('Invalid login');
+    }
+}
+
+// --- Render Main App ---
+function renderApp(){
+    const app = document.getElementById('app');
+    app.innerHTML = `
+        <div class="flex flex-col w-full">
+            <div class="flex flex-col md:flex-row justify-between items-center p-2 bg-gray-200 mb-2">
+                <div class="flex mb-2 md:mb-0">
+                    <button id="signInBtn" class="bg-green-500 text-white p-1 rounded mr-2">Sign In</button>
+                    <button id="signOutBtn" class="bg-red-500 text-white p-1 rounded">Sign Out</button>
+                </div>
+                <div>Logged in as ${currentUser.username} ${currentUser.isAdmin?'(Admin)':''}</div>
+            </div>
+            <div class="flex flex-col md:flex-row">
+                <div class="flex-1 p-2">
+                    <div id="calendar"></div>
+                </div>
+                <div class="w-full md:w-80 p-2 bg-gray-50">
+                    <div class="mb-4">
+                        <h3 class="font-bold mb-2">Request Day Off</h3>
+                        <input type="date" id="dayOffDate" class="border p-1 mb-1 w-full" />
+                        <input type="text" id="dayOffReason" placeholder="Reason" class="border p-1 mb-1 w-full" />
+                        <button id="dayOffBtn" class="bg-green-500 text-white p-1 rounded w-full">Submit</button>
+                    </div>
+                    ${currentUser.isAdmin?`
+                    <div>
+                        <h3 class="font-bold mb-2">Admin Panel</h3>
+                        <button id="genRotaBtn" class="bg-blue-500 text-white p-1 rounded mb-2 w-full">Generate Rota</button>
+                        <div id="requests"></div>
+                        <div id="hours"></div>
+                    </div>`:``}
+                </div>
+            </div>
+        </div>
+    `;
+
+    // --- Buttons ---
+    document.getElementById('signInBtn').onclick = ()=>signInOut('signIn');
+    document.getElementById('signOutBtn').onclick = ()=>signInOut('signOut');
+    document.getElementById('dayOffBtn').onclick = submitDayOff;
+    if(currentUser.isAdmin) document.getElementById('genRotaBtn').onclick = ()=>{
+        generateRota(); renderApp();
+    };
+
+    renderCalendar();
+    if(currentUser.isAdmin) renderAdminPanel();
+}
+
+// --- Calendar ---
+function renderCalendar(){
+    const calendarEl = document.getElementById('calendar');
+    const calendar = new FullCalendar.Calendar(calendarEl, {
+        initialView: 'dayGridMonth',
+        height:'auto',
+        events: getShifts().map(s=>{
+            let title = `${s.username} ${s.signIn?'SI':' '} ${s.signOut?'SO':' '}`;
+            return {title, start:s.date};
+        }).concat(getDayOffs().map(d=>({title:`Day Off (${d.username})`, start:d.date, backgroundColor:d.approved?'green':'orange'})))
+    });
+    calendar.render();
+}
+
+// --- Sign In/Out ---
+function signInOut(type){
+    const today = new Date().toISOString().split('T')[0];
+    const shifts = getShifts();
+    const shift = shifts.find(s=>s.date===today && s.username===currentUser.username);
+    if(shift){
+        if(type==='signIn') shift.signIn = new Date().toISOString();
+        if(type==='signOut') shift.signOut = new Date().toISOString();
+        setShifts(shifts);
+        renderCalendar();
+    } else alert('No shift today');
+}
+
+// --- Day Off ---
+function submitDayOff(){
+    const date = document.getElementById('dayOffDate').value;
+    const reason = document.getElementById('dayOffReason').value;
+    if(!date) return alert('Select a date');
+    const offs = getDayOffs();
+    offs.push({username:currentUser.username, date, reason, approved: currentUser.isAdmin});
+    setDayOffs(offs);
+    renderCalendar();
+    if(currentUser.isAdmin) renderAdminPanel();
+}
+
+// --- Admin Panel ---
+function renderAdminPanel(){
+    const requestsEl = document.getElementById('requests');
+    const hoursEl = document.getElementById('hours');
+    const offs = getDayOffs().filter(d=>!d.approved);
+    requestsEl.innerHTML = '<h4 class="font-bold">Pending Day Offs</h4>';
+    offs.forEach((d,i)=>{
+        const div = document.createElement('div');
+        div.className = 'flex justify-between items-center border p-1 mb-1';
+        div.innerHTML = `${d.date} - ${d.username} - ${d.reason} 
+        <button class="bg-green-500 text-white p-1 rounded ml-1">Approve</button>`;
+        div.querySelector('button').onclick = ()=>{
+            d.approved=true;
+            setDayOffs(getDayOffs());
+            renderApp();
+        };
+        requestsEl.appendChild(div);
+    });
+
+    // Hours summary
+    const users = getUsers().filter(u=>!u.isAdmin);
+    hoursEl.innerHTML='<h4 class="font-bold">User Hours</h4>';
+    const shifts = getShifts();
+    users.forEach(u=>{
+        const userShifts = shifts.filter(s=>s.username===u.username);
+        const total = userShifts.length*8; // approx hours
+        hoursEl.innerHTML += `<div>${u.username}: ${total}h</div>`;
+    });
+}
+
+// --- Start ---
+renderLogin();
+
+</script>
+</body>
+  </html>
